@@ -7,9 +7,13 @@ Reads /work/job.json and the two patches, then:
   4. adds the fix too, and runs them again    -> they should PASS
 and writes /work/result.json. The host never runs the project's code itself:
 that only ever happens in here, isolated from the PC.
+Must run on Python 3.8+: older records are checked on older Pythons.
 """
 
+from __future__ import annotations  # lets "str | None" hints work on Python 3.8
+
 import json
+import re
 import os
 import subprocess
 import sys
@@ -47,18 +51,30 @@ def checkout(repo_url: str, commit: str, repo: Path) -> None:
             raise StepFailed(f"couldn't get the code at {commit[:10]}: {tail(out, 5)}")
 
 
+def toml_section_keys(text: str, section: str) -> set[str]:
+    """Keys in one [section] of a TOML file. A tiny parser, because tomllib
+    only exists on Python 3.11+ and older records run on older Pythons."""
+    keys: set[str] = set()
+    inside = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            inside = stripped == f"[{section}]"
+            continue
+        match = re.match(r'^"?([A-Za-z0-9_.-]+)"?\s*=', stripped) if inside else None
+        if match:
+            keys.add(match.group(1))
+    return keys
+
+
 def extras_available(repo: Path) -> set[str]:
     """Names of optional dependency groups the project declares."""
     names: set[str] = set()
     pyproject = repo / "pyproject.toml"
     if pyproject.exists():
-        try:
-            import tomllib
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-            names |= set(data.get("project", {}).get("optional-dependencies", {}))
-            names |= {f"group:{g}" for g in data.get("dependency-groups", {})}
-        except Exception:
-            pass
+        text = pyproject.read_text(encoding="utf-8", errors="ignore")
+        names |= toml_section_keys(text, "project.optional-dependencies")
+        names |= {f"group:{g}" for g in toml_section_keys(text, "dependency-groups")}
     for name in ("setup.cfg", "setup.py"):
         path = repo / name
         if path.exists():
@@ -79,14 +95,38 @@ def pip_command(date: str | None) -> list[str]:
     return cmd
 
 
-def install(repo: Path, date: str | None = None) -> str:
+NETWORK_ERRORS = ("Request failed", "Connection", "timed out", "Temporary failure", "502", "503")
+
+
+def run_install(cmd: list[str], repo: Path, timeout: int = 900) -> tuple[int, str]:
+    """Run an install, retrying once if the failure looks like a network hiccup."""
+    code, out = run(cmd, repo, timeout)
+    if code != 0 and any(word in out for word in NETWORK_ERRORS):
+        code, out = run(cmd, repo, timeout)
+    return code, out
+
+
+def subprojects(repo: Path, test_files: list[str]) -> list[Path]:
+    """Folders between a test file and the repo root that are their own
+    installable project (e.g. Flask's examples/javascript)."""
+    found: list[Path] = []
+    for test_file in test_files:
+        folder = (repo / test_file).parent
+        while folder != repo and repo in folder.parents:
+            if ((folder / "pyproject.toml").exists() or (folder / "setup.py").exists()) and folder not in found:
+                found.append(folder)
+            folder = folder.parent
+    return found
+
+
+def install(repo: Path, date: str | None = None, test_files: list[str] | None = None) -> str:
     """Install the project, its test dependencies and pytest, as of `date`."""
     pip = pip_command(date)
     log = []
     for req in ("requirements/tests.txt", "requirements/test.txt", "requirements-dev.txt",
                 "requirements/dev.txt", "test-requirements.txt", "requirements-test.txt"):
         if (repo / req).exists():
-            code, out = run(pip + ["-r", req], repo, 900)
+            code, out = run_install(pip + ["-r", req], repo)
             log.append(out)
             if code == 0:
                 break
@@ -94,18 +134,23 @@ def install(repo: Path, date: str | None = None) -> str:
     available = extras_available(repo)
     for group in ("tests", "test", "testing", "dev"):
         if f"group:{group}" in available:
-            code, out = run(pip + ["--group", group], repo, 900)
+            code, out = run_install(pip + ["--group", group], repo)
             log.append(out)
             break
 
     extra = next((e for e in ("testing", "tests", "test", "dev") if e in available), None)
     target = f".[{extra}]" if extra else "."
-    code, out = run(pip + ["-e", target], repo, 900)
+    code, out = run_install(pip + ["-e", target], repo)
     log.append(out)
     if code != 0:
         raise StepFailed("couldn't install the project: " + tail(out, 8))
+    for folder in subprojects(repo, test_files or []):
+        code, out = run_install(pip + ["-e", str(folder)], repo)
+        log.append(out)
+        if code != 0:
+            raise StepFailed(f"couldn't install {folder.relative_to(repo)}: " + tail(out, 8))
     if run([sys.executable, "-c", "import pytest"], repo, 60)[0] != 0:
-        code, out = run(pip + ["pytest"], repo, 600)  # pytest from the same date
+        code, out = run_install(pip + ["pytest"], repo, 600)  # pytest from the same date
         log.append(out)
     return "\n".join(log)
 
@@ -161,7 +206,7 @@ def main(work: Path) -> dict:
     try:
         checkout(job["repo_url"], job["base_commit"], repo)
         if job.get("install", True):
-            install(repo, job.get("exclude_newer"))
+            install(repo, job.get("exclude_newer"), job["test_files"])
         apply_patch(repo, work / "test.patch", "test patch")
         result["before"], result["log_before"] = run_tests(repo, job["test_files"], work / "before.xml", job.get("test_timeout", 600))
         apply_patch(repo, work / "code.patch", "fix")

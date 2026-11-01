@@ -19,6 +19,29 @@ from bugfix.rules import quality_score, scrub_text, split_fix
 IMAGE = "bugfix-runner"
 DOCKER_TIMEOUT = 45 * 60  # install + two test runs
 
+# Python release dates. A fix is checked on the newest Python that had been
+# out for 6+ months when it was merged: what the project was tested on then.
+PYTHON_RELEASES = [("3.8", "2019-10-14"), ("3.9", "2020-10-05"), ("3.10", "2021-10-04"),
+                   ("3.11", "2022-10-24"), ("3.12", "2023-10-02")]
+SETTLE_MONTHS = 6
+
+
+def python_for_date(merged_at: str | None) -> str:
+    """'2023-04-12T…' -> '3.11'. Unknown dates get the newest version."""
+    if not merged_at:
+        return PYTHON_RELEASES[-1][0]
+    year, month = int(merged_at[:4]), int(merged_at[5:7])
+    chosen = PYTHON_RELEASES[0][0]
+    for version, released in PYTHON_RELEASES:
+        r_year, r_month = int(released[:4]), int(released[5:7])
+        if (year - r_year) * 12 + (month - r_month) >= SETTLE_MONTHS:
+            chosen = version
+    return chosen
+
+
+def image_for(version: str) -> str:
+    return f"{IMAGE}:py{version}"
+
 
 class DockerError(Exception):
     pass
@@ -102,8 +125,26 @@ def prepare_job(record: Record, work: Path, install: bool = True) -> None:
             f.write(patch)
 
 
-def docker_runner(record: Record, work: Path, image: str = IMAGE, timeout: int = DOCKER_TIMEOUT) -> dict:
-    """Run one record in a fresh container; return the runner's result."""
+def image_exists(image: str) -> bool:
+    done = subprocess.run(["docker", "image", "inspect", image], capture_output=True)
+    return done.returncode == 0
+
+
+def build_image(version: str, quiet: bool = False) -> bool:
+    cmd = ["docker", "build", "-t", image_for(version), "--build-arg", f"PYTHON_VERSION={version}",
+           "-f", "docker/Dockerfile", "."]
+    done = subprocess.run(cmd, capture_output=quiet)
+    return done.returncode == 0
+
+
+def docker_runner(record: Record, work: Path, timeout: int = DOCKER_TIMEOUT) -> dict:
+    """Run one record in a fresh container, on the Python of its time."""
+    version = python_for_date(record.pr.merged_at)
+    image = image_for(version)
+    if not image_exists(image):
+        print(f"(building the Python {version} image, one time only…) ", end="", flush=True)
+        if not build_image(version, quiet=True):
+            return {"status": "error", "note": f"couldn't build the Python {version} image"}
     prepare_job(record, work)
     name = f"bugfix-{record.id}".replace("/", "-")[:60]
     cmd = ["docker", "run", "--rm", "--name", name, "--memory", "4g", "--cpus", "2",

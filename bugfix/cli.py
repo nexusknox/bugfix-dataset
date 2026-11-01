@@ -10,7 +10,6 @@
 import argparse
 import logging
 import os
-import subprocess
 import sys
 import time
 from collections import Counter
@@ -21,7 +20,7 @@ from dotenv import load_dotenv
 from bugfix import store
 from bugfix.github import GitHubClient, GitHubError
 from bugfix.mine import discover, mine_repo
-from bugfix.verify import IMAGE, DockerError, docker_ready, verify_record
+from bugfix.verify import PYTHON_RELEASES, DockerError, build_image, docker_ready, image_for, verify_record
 
 CANDIDATES = Path("data/candidates.jsonl")
 WORK = Path("work")
@@ -63,10 +62,13 @@ def cmd_build_image(args):
     if problem:
         print(problem)
         sys.exit(1)
-    print(f"Building the '{IMAGE}' image (first time takes a few minutes)…")
-    done = subprocess.run(["docker", "build", "-t", IMAGE, "-f", "docker/Dockerfile", "."])
-    print("Image ready." if done.returncode == 0 else "Build failed: see the messages above.")
-    sys.exit(done.returncode)
+    versions = [args.python] if args.python else [v for v, _ in PYTHON_RELEASES]
+    for version in versions:
+        print(f"Building {image_for(version)} (first time takes a few minutes)…")
+        if not build_image(version):
+            print("Build failed: see the messages above.")
+            sys.exit(1)
+    print("Image(s) ready.")
 
 
 def cmd_verify(args):
@@ -122,7 +124,8 @@ def main(argv=None):
     p.add_argument("--max-prs", type=int, default=300)
     p.set_defaults(run=cmd_mine)
 
-    p = sub.add_parser("build-image", help="build the Docker image records are verified in")
+    p = sub.add_parser("build-image", help="build the Docker images records are verified in")
+    p.add_argument("--python", help="just one version, e.g. 3.11 (default: all)")
     p.set_defaults(run=cmd_build_image)
 
     p = sub.add_parser("verify", help="prove each fix: tests fail before it, pass after it")

@@ -1,6 +1,8 @@
-# The sandbox each record is verified in. Build from the project root:
-#   python -m bugfix.cli build-image
-FROM python:3.12-slim
+# The sandbox each record is verified in. One image per Python version,
+# built automatically by "verify" when first needed, or by hand:
+#   python -m bugfix.cli build-image --python 3.11
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
 
 # git to fetch the code; gcc for the occasional test dependency that compiles
 RUN apt-get update \

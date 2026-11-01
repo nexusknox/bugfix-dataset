@@ -220,3 +220,60 @@ def test_unexpected_problem_marks_one_record_as_error(tmp_path):
         raise RuntimeError("disk full")
     record = verify_record(make_record(), tmp_path, runner=crashing_runner)
     assert record.verification.status == "error" and "disk full" in record.verification.note
+
+
+# ------------------------------------------------------- the right Python
+
+@pytest.mark.parametrize("merged_at, version", [
+    ("2025-06-01T00:00:00Z", "3.12"),
+    ("2024-03-01T00:00:00Z", "3.11"),   # 3.12 was only 5 months old
+    ("2023-03-01T00:00:00Z", "3.10"),   # 3.11 only 5 months old
+    ("2023-04-12T00:00:00Z", "3.11"),   # flask-5063's era: 3.11, not 3.12
+    ("2018-01-01T00:00:00Z", "3.8"),    # older than every image: oldest we have
+    (None, "3.12"),
+    ("", "3.12"),
+])
+def test_python_version_is_chosen_by_merge_date(merged_at, version):
+    from bugfix.verify import python_for_date
+    assert python_for_date(merged_at) == version
+
+
+def test_images_are_tagged_by_python_version():
+    from bugfix.verify import image_for
+    assert image_for("3.11") == "bugfix-runner:py3.11"
+
+
+# ----------------------------------------------- installing older projects
+
+def test_pyproject_extras_found_without_tomllib(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n\n[project.optional-dependencies]\n'
+        'testing = ["pytest"]\n"docs" = ["sphinx"]\n\n[dependency-groups]\ntests = ["y"]\n')
+    assert runner.extras_available(tmp_path) == {"testing", "docs", "group:tests"}
+
+
+def test_example_subprojects_are_found(tmp_path):
+    example = tmp_path / "examples" / "javascript"
+    (example / "tests").mkdir(parents=True)
+    (example / "pyproject.toml").write_text("[project]\nname='js_example'\n")
+    found = runner.subprojects(tmp_path, ["examples/javascript/tests/test_js.py", "tests/test_app.py"])
+    assert found == [example]
+
+
+def test_install_retries_once_on_a_network_error(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, cwd, timeout):
+        calls.append(cmd)
+        return (1, "Request failed after 3 retries") if len(calls) == 1 else (0, "ok")
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    assert runner.run_install(["uv", "pip", "install", "x"], tmp_path) == (0, "ok")
+    assert len(calls) == 2
+
+
+def test_install_does_not_retry_real_errors(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(runner, "run", lambda cmd, cwd, timeout: calls.append(cmd) or (1, "No solution found"))
+    runner.run_install(["uv"], tmp_path)
+    assert len(calls) == 1
