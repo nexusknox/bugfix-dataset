@@ -20,6 +20,14 @@ class FakeSession:
         self.headers = {}
         self.calls = []
 
+    def post(self, url, json=None, timeout=None):
+        """GraphQL: routes["/graphql"] is a list of pages, given in order."""
+        self.calls.append(("/graphql", (json or {}).get("variables", {}).get("cursor")))
+        pages = self.routes.get("/graphql")
+        if not pages:
+            return FakeResponse(404, {"message": "Not Found"})
+        return FakeResponse(200, {"data": pages.pop(0)})
+
     def get(self, url, params=None, headers=None, timeout=None):
         path = url.replace("https://api.github.com", "")
         accept = (headers or {}).get("Accept", "")

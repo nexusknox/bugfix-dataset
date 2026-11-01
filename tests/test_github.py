@@ -70,3 +70,15 @@ def test_search_results_are_unwrapped():
 def test_diffs_are_fetched_as_text(tmp_path):
     c = client({"/repos/a/b/pulls/1#diff": "diff --git a/x b/x\n"}, tmp_path)
     assert c.get_diff("/repos/a/b/pulls/1").startswith("diff --git")
+
+
+def test_graphql_is_cached_and_needs_a_token(tmp_path):
+    page = {"repository": {"x": 1}}
+    c = client({"/graphql": [page]}, tmp_path)
+    assert c.graphql("query", {"a": 1}) == page
+    assert c.graphql("query", {"a": 1}) == page  # second time from the cache
+    assert c.requests_made == 1
+
+    no_token = GitHubClient(None, cache_dir=None, session=FakeSession({}))
+    with pytest.raises(GitHubError, match="token"):
+        no_token.graphql("query", {})

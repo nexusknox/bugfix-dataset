@@ -94,6 +94,36 @@ class GitHubClient:
             cached.write_text(json.dumps(text), encoding="utf-8")
         return text
 
+    def graphql(self, query: str, variables: dict) -> dict:
+        """POST a GraphQL query. Cached on disk like everything else.
+        GraphQL needs a token; it's the only API that shows every way a PR
+        can be linked to the issue it fixes."""
+        url = API + "/graphql"
+        cached = self._cache_path(url, {"q": query, "v": json.dumps(variables, sort_keys=True)}, "graphql")
+        if cached and cached.exists():
+            return json.loads(cached.read_text(encoding="utf-8"))
+        if "Authorization" not in self.session.headers:
+            raise GitHubError("Mining needs a GitHub token. Add GITHUB_TOKEN to your .env file.")
+        for attempt in range(3):
+            response = self.session.post(url, json={"query": query, "variables": variables}, timeout=60)
+            self.requests_made += 1
+            if response.status_code in (502, 503, 504):
+                self.sleep(2 ** attempt)
+                continue
+            if response.status_code == 401:
+                raise GitHubError("GitHub rejected the token. Check GITHUB_TOKEN in your .env file.")
+            if response.status_code >= 400:
+                raise GitHubError(f"GitHub GraphQL returned {response.status_code}")
+            payload = response.json()
+            if payload.get("errors"):
+                raise GitHubError("GitHub GraphQL error: " + payload["errors"][0].get("message", "unknown"))
+            data = payload["data"]
+            if cached:
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                cached.write_text(json.dumps(data), encoding="utf-8")
+            return data
+        raise GitHubError("GitHub GraphQL kept failing; try again later.")
+
     def paginate(self, path: str, params: dict | None = None, limit: int = 1000):
         """Yield items across pages (per_page=100) until `limit` items."""
         params = dict(params or {}, per_page=100)

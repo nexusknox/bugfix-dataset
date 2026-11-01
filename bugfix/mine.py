@@ -1,10 +1,9 @@
 """Finding real bug fixes on GitHub and turning them into records.
 
 Cheap checks run first, so most pull requests cost no extra API calls:
-  1. merged?               (already in the PR list)
-  2. closes an issue?      (PR text, no call)
-  3. code + tests changed? (1 call: the diff)
-  4. the issue, the true starting commit and recent history (3-4 calls)
+  1. merged + linked issues (one GraphQL call per 50 PRs)
+  2. code + tests changed?  (1 call: the diff)
+  3. the issue, the true starting commit and recent history (3 calls)
 """
 
 from collections import Counter
@@ -75,8 +74,53 @@ def discover(client: GitHubClient, min_stars: int = 1000, limit: int = 20) -> li
 
 # ---------------------------------------------------------------- mining
 
+MERGED_PRS_QUERY = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: MERGED, first: 50, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title body url mergedAt baseRefOid headRefOid
+        mergeCommit { oid }
+        closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } } }
+      }
+    }
+  }
+}
+"""
+
+
+def merged_prs(client: GitHubClient, repo: str, limit: int):
+    """Merged pull requests, newest first, each with the issues it closes.
+
+    GitHub records a link when the PR text says "Fixes #12" OR when someone
+    links them in the PR's Development sidebar. Only GraphQL shows both.
+    """
+    owner, name = repo.split("/", 1)
+    cursor, given = None, 0
+    while given < limit:
+        data = client.graphql(MERGED_PRS_QUERY, {"owner": owner, "name": name, "cursor": cursor})
+        page = data["repository"]["pullRequests"]
+        for node in page["nodes"]:
+            linked = [ref["number"] for ref in node["closingIssuesReferences"]["nodes"]
+                      if ref["repository"]["nameWithOwner"].lower() == repo.lower()]
+            yield {
+                "number": node["number"], "title": node["title"], "body": node["body"] or "",
+                "html_url": node["url"], "merged_at": node["mergedAt"],
+                "merge_commit_sha": (node.get("mergeCommit") or {}).get("oid", ""),
+                "base": {"sha": node["baseRefOid"]}, "head": {"sha": node["headRefOid"]},
+                "linked_issues": linked,
+            }
+            given += 1
+            if given >= limit:
+                return
+        if not page["pageInfo"]["hasNextPage"]:
+            return
+        cursor = page["pageInfo"]["endCursor"]
+
+
 def mine_repo(client: GitHubClient, repo: str, max_prs: int = 300) -> MineResult:
-    """Check up to `max_prs` recently closed pull requests in one repo."""
+    """Check up to `max_prs` recently merged pull requests in one repo."""
     result = MineResult()
     info = repo_info(client, repo)
     if info.problem:
@@ -84,15 +128,17 @@ def mine_repo(client: GitHubClient, repo: str, max_prs: int = 300) -> MineResult
         return result
 
     seen_fingerprints: set[str] = set()
-    pulls = client.paginate(f"/repos/{repo}/pulls",
-                            {"state": "closed", "sort": "updated", "direction": "desc"}, limit=max_prs)
-    for pr in pulls:
+    for pr in merged_prs(client, repo, max_prs):
         result.prs_checked += 1
         reason = None
         if not pr.get("merged_at"):
             reason = "not merged"
         else:
-            issues = closing_issue_numbers(f"{pr.get('title', '')}\n{pr.get('body') or ''}", repo)
+            # GitHub's own links first, then "Fixes #12" in the text as a backup
+            issues = list(pr.get("linked_issues", []))
+            for number in closing_issue_numbers(f"{pr.get('title', '')}\n{pr.get('body') or ''}", repo):
+                if number not in issues:
+                    issues.append(number)
             if not issues:
                 reason = "no linked issue"
             else:

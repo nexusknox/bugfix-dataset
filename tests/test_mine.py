@@ -14,10 +14,20 @@ NO_TESTS_DIFF = GOOD_DIFF.split("diff --git a/tests")[0]
 SECRET_DIFF = GOOD_DIFF.replace("return x or 0", "return 'ghp_" + "a" * 36 + "'")
 
 
-def pr(number, merged=True, body="", base="b" * 40, head="h" * 40):
-    return {"number": number, "title": f"PR {number}", "body": body, "html_url": f"https://github.com/{REPO}/pull/{number}",
-            "merged_at": "2026-10-01T10:00:00Z" if merged else None, "merge_commit_sha": f"m{number}",
-            "base": {"sha": base}, "head": {"sha": head}}
+def pr(number, body="", linked=(), base="b" * 40, head="h" * 40):
+    """One merged PR, as GitHub's GraphQL API returns it."""
+    return {"number": number, "title": f"PR {number}", "body": body, "url": f"https://github.com/{REPO}/pull/{number}",
+            "mergedAt": "2026-10-01T10:00:00Z", "mergeCommit": {"oid": f"m{number}"},
+            "baseRefOid": base, "headRefOid": head,
+            "closingIssuesReferences": {"nodes": [{"number": n, "repository": {"nameWithOwner": repo}}
+                                                  for n, repo in linked]}}
+
+
+def graphql_pages(*pages):
+    """GraphQL pages of PRs; every page but the last says there's more."""
+    return [{"repository": {"pullRequests": {
+        "pageInfo": {"hasNextPage": i < len(pages) - 1, "endCursor": f"c{i}"}, "nodes": nodes}}}
+        for i, nodes in enumerate(pages)]
 
 
 def repo_routes(license_id="MIT", language="Python", root=("tests", "widgets", "README.md")):
@@ -54,20 +64,24 @@ def test_non_python_repo_is_skipped():
 
 def full_routes():
     routes = repo_routes()
-    routes[f"/repos/{REPO}/pulls"] = [
-        pr(1, merged=False, body="Fixes #10"),
-        pr(2, body="Just a refactor"),
-        pr(3, body="Fixes #11"),                        # no tests in the diff
-        pr(4, body="Fixes #12\n\nThanks to jane@company.co.ke"),  # the good one
-        pr(5, body="Closes #12 (backport)"),           # same fix again
-        pr(6, body="Fixes #13"),                        # secret in patch
-        pr(7, body="Fixes #14"),                        # "issue" 14 is really a PR
-    ]
+    routes["/graphql"] = graphql_pages(
+        [pr(2, body="Just a refactor"),
+         pr(3, body="Fixes #11"),                                     # no tests in the diff
+         pr(4, body="Fixes #12\n\nThanks to jane@company.co.ke")],   # good: linked in the text
+        [pr(5, body="Closes #12 (backport)"),                        # same fix again
+         pr(6, body="Fixes #13"),                                     # secret in patch
+         pr(7, body="Fixes #14"),                                     # "issue" 14 is really a PR
+         pr(8, body="Small fix", linked=[(15, REPO)]),                # good: linked only in the sidebar
+         pr(9, body="Port of upstream fix", linked=[(3, "other/repo")])],  # links another repo's issue
+    )
     routes[f"/repos/{REPO}/pulls/3#diff"] = NO_TESTS_DIFF
     routes[f"/repos/{REPO}/pulls/4#diff"] = GOOD_DIFF
     routes[f"/repos/{REPO}/pulls/5#diff"] = GOOD_DIFF.replace("@@ -1,2 +1,2 @@", "@@ -40,2 +40,2 @@")
     routes[f"/repos/{REPO}/pulls/6#diff"] = SECRET_DIFF
     routes[f"/repos/{REPO}/pulls/7#diff"] = GOOD_DIFF.replace("x or 0", "x or 1")
+    routes[f"/repos/{REPO}/pulls/8#diff"] = GOOD_DIFF.replace("x or 0", "x if x is not None else 0")
+    routes[f"/repos/{REPO}/issues/15"] = {"number": 15, "title": "Edge case", "html_url": "https://github.com/acme/widgets/issues/15",
+                                          "body": "Short description of the edge case here.", "labels": []}
     routes[f"/repos/{REPO}/issues/12"] = {"number": 12, "title": "f(None) crashes", "html_url": "https://github.com/acme/widgets/issues/12",
                                           "body": "Calling f(None) raises. Reported by bob@corp.example.co.uk " + "details " * 30,
                                           "labels": [{"name": "bug"}], "created_at": "2026-09-01T00:00:00Z"}
@@ -78,15 +92,28 @@ def full_routes():
     return routes
 
 
-def test_mining_keeps_only_real_verified_able_fixes():
+def test_mining_keeps_only_real_verifiable_fixes():
     result = mine_repo(make_client(full_routes()), REPO)
 
-    assert result.prs_checked == 7
-    assert [r.id for r in result.records] == ["acme__widgets-4"]
+    assert result.prs_checked == 8  # across two GraphQL pages
+    assert [r.id for r in result.records] == ["acme__widgets-4", "acme__widgets-8"]
     assert result.rejected == {
-        "not merged": 1, "no linked issue": 1, "no test changes, so it can't be verified": 1,
+        "no linked issue": 2, "no test changes, so it can't be verified": 1,
         "duplicate of another fix": 1, "patch contains a secret": 1, "linked issue is missing or is itself a PR": 1,
     }
+
+
+def test_sidebar_links_count_but_other_repos_issues_do_not():
+    records = {r.id: r for r in mine_repo(make_client(full_routes()), REPO).records}
+    assert records["acme__widgets-8"].issue.number == 15
+    assert "acme__widgets-9" not in records
+
+
+def test_max_prs_stops_early_without_fetching_more_pages():
+    session = FakeSession(full_routes())
+    result = mine_repo(GitHubClient("t", cache_dir=None, session=session), REPO, max_prs=2)
+    assert result.prs_checked == 2
+    assert sum(1 for path, _ in session.calls if path == "/graphql") == 1
 
 
 def test_record_contents():
@@ -127,5 +154,5 @@ def test_store_round_trip_and_merge_without_duplicates(tmp_path):
     assert loaded == records
 
     merged, added = store.merge(loaded, records)
-    assert added == 0 and len(merged) == 1
+    assert added == 0 and len(merged) == len(records)
     assert not (tmp_path / "data" / "candidates.jsonl.part").exists()
