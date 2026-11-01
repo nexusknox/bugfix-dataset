@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Secrets
+.env
+
+# Collected data, API cache and Docker workspaces (large; published separately)
+data/
+cache/
+work/
+
+# Editor / OS
+.vscode/
+Thumbs.db
