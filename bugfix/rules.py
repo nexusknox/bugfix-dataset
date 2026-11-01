@@ -95,23 +95,37 @@ def is_test_file(path: str) -> bool:
     )
 
 
+PROJECT_INFO_NAMES = ("authors", "contributors", "changelog", "changes", "history", "license", "licence",
+                      "notice", "codeowners", "manifest.in", "readme")
+OTHER_LANGUAGES = (".c", ".h", ".cc", ".cpp", ".hpp", ".pyx", ".pxd", ".js", ".jsx", ".ts", ".tsx",
+                   ".rs", ".go", ".java", ".rb", ".cs", ".swift", ".kt")
+
+
 def is_ignorable(path: str) -> bool:
-    """Files a fix may touch that don't matter for verification."""
+    """Docs and project info a fix may touch that don't affect the tests:
+    docs, changelogs, AUTHORS, licences, CI config, requirements files."""
     lower = path.lower()
+    name = lower.rsplit("/", 1)[-1]
     return (
-        lower.endswith((".md", ".rst", ".txt", ".toml", ".cfg", ".ini", ".yml", ".yaml"))
-        or lower.startswith(("docs/", "doc/", ".github/", "changelog", "changes/", "news/"))
+        lower.endswith((".md", ".rst", ".txt", ".toml", ".cfg", ".ini", ".yml", ".yaml", ".in", ".lock"))
+        or lower.startswith(("docs/", "doc/", ".github/", "changelog/", "changes/", "news/", "requirements/"))
+        or name.split(".")[0] in PROJECT_INFO_NAMES
     )
+
+
+def is_other_language(path: str) -> bool:
+    """Source in a language pytest can't verify on its own (needs compiling, etc.)."""
+    return path.lower().endswith(OTHER_LANGUAGES)
 
 
 @dataclass
 class SplitFix:
     code_patch: str
     test_patch: str
-    code_files: list[str]
+    code_files: list[str]      # Python files first, then data files and templates the fix needs
     test_files: list[str]
-    other_files: list[str]     # non-Python source we can't verify (C, JS…)
-    changed_lines: int         # code lines only
+    other_files: list[str]     # other-language source we can't verify (C, JS…)
+    changed_lines: int         # Python code lines only
 
 
 def split_fix(diff: str) -> SplitFix:
@@ -121,17 +135,18 @@ def split_fix(diff: str) -> SplitFix:
             tests.append(f)
         elif is_ignorable(f.path):
             continue
-        elif f.path.endswith(".py"):
-            code.append(f)
-        else:
+        elif is_other_language(f.path):
             other.append(f)
+        else:
+            code.append(f)  # .py, plus templates/data files the fix may need
+    code.sort(key=lambda f: not f.path.endswith(".py"))
     return SplitFix(
         code_patch="".join(f.text for f in code),
         test_patch="".join(f.text for f in tests),
         code_files=[f.path for f in code],
         test_files=[f.path for f in tests],
         other_files=[f.path for f in other],
-        changed_lines=sum(f.added + f.removed for f in code),
+        changed_lines=sum(f.added + f.removed for f in code if f.path.endswith(".py")),
     )
 
 
@@ -148,12 +163,12 @@ def rejection_reasons(fix: SplitFix, linked_issues: list[int]) -> list[str]:
     reasons = []
     if not linked_issues:
         reasons.append("no linked issue")
-    if not fix.code_files:
+    if not any(path.endswith(".py") for path in fix.code_files):
         reasons.append("no Python source changes")
     if not fix.test_files:
         reasons.append("no test changes, so it can't be verified")
     if fix.other_files:
-        reasons.append("changes non-Python source: " + ", ".join(fix.other_files[:3]))
+        reasons.append("changes another language's source: " + ", ".join(fix.other_files[:3]))
     if fix.changed_lines > MAX_CODE_LINES:
         reasons.append(f"too large ({fix.changed_lines} code lines changed)")
     if len(fix.code_files) > MAX_CODE_FILES:

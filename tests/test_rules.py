@@ -99,7 +99,7 @@ def test_every_reason_is_reported():
     assert "no linked issue" in reasons
     assert "no Python source changes" in reasons
     assert any("can't be verified" in r for r in reasons)
-    assert any("non-Python" in r for r in reasons)
+    assert any("another language" in r for r in reasons)
 
 
 def test_huge_fix_is_rejected():
@@ -159,3 +159,29 @@ def test_record_round_trips_through_a_dict():
     )
     assert record.id == "acme__widgets-7"
     assert Record.from_dict(record.to_dict()) == record
+
+
+def test_project_info_files_are_ignored_not_rejected():
+    fix = split_fix(FIX + file_diff("AUTHORS", ["Jane Doe"]) + file_diff("requirements/tests.in", ["pytest"])
+                    + file_diff("changelog/1234.bugfix.rst", ["Fixed it."]) + file_diff("LICENSE", ["x"]))
+    assert fix.other_files == []
+    assert fix.code_files == ["widgets/core.py"]
+    assert rejection_reasons(fix, [1]) == []
+
+
+def test_templates_and_data_files_stay_in_the_code_patch():
+    fix = split_fix(file_diff("flask/templates/error.html", ["<p>{{ e }}</p>"]) + FIX)
+    assert fix.code_files == ["widgets/core.py", "flask/templates/error.html"]  # Python first
+    assert "error.html" in fix.code_patch
+    assert fix.changed_lines == 2  # only Python lines count towards "too large"
+
+
+def test_other_languages_are_rejected():
+    fix = split_fix(FIX + file_diff("widgets/_speedups.pyx", ["cdef int x"]))
+    assert fix.other_files == ["widgets/_speedups.pyx"]
+    assert any("another language" in r for r in rejection_reasons(fix, [1]))
+
+
+def test_template_only_change_has_no_python_source():
+    fix = split_fix(file_diff("app/templates/a.html", ["x"]) + file_diff("tests/test_a.py", ["pass"]))
+    assert "no Python source changes" in rejection_reasons(fix, [1])
