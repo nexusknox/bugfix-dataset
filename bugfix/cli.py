@@ -4,7 +4,9 @@
     python -m bugfix.cli mine psf/requests --max-prs 300
     python -m bugfix.cli build-image
     python -m bugfix.cli verify --limit 5
+    python -m bugfix.cli export
     python -m bugfix.cli stats
+    streamlit run viewer/app.py
 """
 
 import argparse
@@ -18,6 +20,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from bugfix import store
+from bugfix.export import export
 from bugfix.github import GitHubClient, GitHubError
 from bugfix.mine import discover, mine_repo
 from bugfix.verify import PYTHON_RELEASES, DockerError, build_image, docker_ready, image_for, verify_record
@@ -97,6 +100,17 @@ def cmd_verify(args):
         store.save(CANDIDATES, records)  # after every record, so stopping loses nothing
 
 
+def cmd_export(args):
+    records = store.load(CANDIDATES)
+    if not records:
+        print("No records yet. Run: python -m bugfix.cli mine owner/repo")
+        return
+    out = Path(args.out)
+    numbers = export(records, out, verified_only=not args.include_unverified, min_score=args.min_score)
+    print(f"Exported {numbers['released']} record(s) to {out}")
+    print("  dataset.jsonl, test_logs.jsonl, swebench.jsonl, stats.json, DATASET_CARD.md")
+
+
 def cmd_stats(args):
     records = store.load(CANDIDATES)
     if not records:
@@ -133,6 +147,12 @@ def main(argv=None):
     p.add_argument("--repo", help="only this repo, e.g. pallets/flask")
     p.add_argument("--retry", action="store_true", help="also retry failed and errored records")
     p.set_defaults(run=cmd_verify)
+
+    p = sub.add_parser("export", help="write a release: dataset, logs, SWE-bench format, dataset card")
+    p.add_argument("--out", default="data/release")
+    p.add_argument("--min-score", type=int, default=0)
+    p.add_argument("--include-unverified", action="store_true")
+    p.set_defaults(run=cmd_export)
 
     p = sub.add_parser("stats", help="summarise the collected records")
     p.set_defaults(run=cmd_stats)
