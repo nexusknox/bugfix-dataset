@@ -37,8 +37,8 @@ class Commit:
 @dataclass
 class Verification:
     status: str = "not_run"            # not_run, verified, failed, error
-    fail_before: list[str] = field(default_factory=list)   # tests failing without the fix
-    pass_after: list[str] = field(default_factory=list)    # the same tests passing with it
+    fail_to_pass: list[str] = field(default_factory=list)  # fail without the fix, pass with it (the proof)
+    pass_to_pass: list[str] = field(default_factory=list)  # pass both times (the fix broke nothing)
     log_before: str = ""
     log_after: str = ""
     python_version: str = ""
@@ -80,7 +80,13 @@ class Record:
         data["issue"] = Issue(**data["issue"])
         data["pr"] = PullRequest(**data["pr"])
         data["history"] = [Commit(**c) for c in data.get("history", [])]
-        data["verification"] = Verification(**data.get("verification", {}))
+        verification = dict(data.get("verification", {}))
+        # Records saved before these fields were renamed
+        verification.setdefault("fail_to_pass", verification.pop("fail_before", []))
+        verification.setdefault("pass_to_pass", verification.pop("pass_after", []))
+        verification.pop("fail_before", None)
+        verification.pop("pass_after", None)
+        data["verification"] = Verification(**verification)
         data["quality"] = Quality(**data.get("quality", {}))
         return cls(**data)
 

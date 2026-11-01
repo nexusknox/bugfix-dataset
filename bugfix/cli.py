@@ -2,13 +2,17 @@
 
     python -m bugfix.cli discover --min-stars 2000 --limit 10
     python -m bugfix.cli mine psf/requests --max-prs 300
+    python -m bugfix.cli build-image
+    python -m bugfix.cli verify --limit 5
     python -m bugfix.cli stats
 """
 
 import argparse
 import logging
 import os
+import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -17,8 +21,10 @@ from dotenv import load_dotenv
 from bugfix import store
 from bugfix.github import GitHubClient, GitHubError
 from bugfix.mine import discover, mine_repo
+from bugfix.verify import IMAGE, DockerError, docker_ready, verify_record
 
 CANDIDATES = Path("data/candidates.jsonl")
+WORK = Path("work")
 
 
 def make_client() -> GitHubClient:
@@ -52,6 +58,43 @@ def cmd_mine(args):
     print(f"Done: {total_added} new candidate(s) in {CANDIDATES} ({client.requests_made} API requests)")
 
 
+def cmd_build_image(args):
+    problem = docker_ready()
+    if problem:
+        print(problem)
+        sys.exit(1)
+    print(f"Building the '{IMAGE}' image (first time takes a few minutes)…")
+    done = subprocess.run(["docker", "build", "-t", IMAGE, "-f", "docker/Dockerfile", "."])
+    print("Image ready." if done.returncode == 0 else "Build failed: see the messages above.")
+    sys.exit(done.returncode)
+
+
+def cmd_verify(args):
+    problem = docker_ready()
+    if problem:
+        print(problem)
+        sys.exit(1)
+    records = store.load(CANDIDATES)
+    wanted = {"not_run"} | ({"failed", "error", "timeout"} if args.retry else set())
+    todo = [r for r in records if r.verification.status in wanted and (not args.repo or r.repo == args.repo)]
+    todo = todo[: args.limit]
+    if not todo:
+        print("Nothing to verify. (Use --retry to try failed ones again.)")
+        return
+    print(f"Verifying {len(todo)} record(s). Each one installs a project in Docker: allow a few minutes each.")
+    for number, record in enumerate(todo, start=1):
+        started = time.time()
+        print(f"[{number}/{len(todo)}] {record.id} … ", end="", flush=True)
+        verify_record(record, WORK)
+        v = record.verification
+        took = f"{time.time() - started:.0f}s"
+        if v.status == "verified":
+            print(f"verified ({len(v.fail_to_pass)} test(s) fail before, pass after) [{took}]")
+        else:
+            print(f"{v.status}: {v.note[:120]} [{took}]")
+        store.save(CANDIDATES, records)  # after every record, so stopping loses nothing
+
+
 def cmd_stats(args):
     records = store.load(CANDIDATES)
     if not records:
@@ -79,6 +122,15 @@ def main(argv=None):
     p.add_argument("--max-prs", type=int, default=300)
     p.set_defaults(run=cmd_mine)
 
+    p = sub.add_parser("build-image", help="build the Docker image records are verified in")
+    p.set_defaults(run=cmd_build_image)
+
+    p = sub.add_parser("verify", help="prove each fix: tests fail before it, pass after it")
+    p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--repo", help="only this repo, e.g. pallets/flask")
+    p.add_argument("--retry", action="store_true", help="also retry failed and errored records")
+    p.set_defaults(run=cmd_verify)
+
     p = sub.add_parser("stats", help="summarise the collected records")
     p.set_defaults(run=cmd_stats)
 
@@ -86,7 +138,7 @@ def main(argv=None):
     logging.basicConfig(filename="bugfix.log", level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         args.run(args)
-    except GitHubError as error:
+    except (GitHubError, DockerError) as error:
         print(f"Stopped: {error}")
         sys.exit(1)
     except KeyboardInterrupt:
