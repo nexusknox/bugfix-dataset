@@ -38,7 +38,8 @@ def test_minimum_score_and_unverified_option():
 def test_export_writes_every_file(tmp_path):
     numbers = export(RECORDS, tmp_path / "release")
     files = sorted(p.name for p in (tmp_path / "release").iterdir())
-    assert files == ["DATASET_CARD.md", "dataset.jsonl", "stats.json", "swebench.jsonl", "test_logs.jsonl"]
+    assert files == ["DATASET_CARD.md", "dataset.jsonl", "sample.jsonl", "stats.json", "swebench.jsonl", "test_logs.jsonl"]
+    assert len(read_jsonl(tmp_path / "release" / "sample.jsonl")) == 3
     assert numbers["released"] == 3 and numbers["candidates"] == 4
     assert numbers["by_license"] == {"MIT": 2, "BSD-3-Clause": 1}
     assert numbers["by_python"] == {"3.12": 3}

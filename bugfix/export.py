@@ -6,7 +6,10 @@ A release folder holds:
   swebench.jsonl    the same records in SWE-bench's field names
   stats.json        counts, for dashboards and the card
   DATASET_CARD.md   what's in it, how it was made, licences, limits
+  sample.jsonl      the first few records, small enough to commit to git
 """
+
+SAMPLE_SIZE = 3
 
 import json
 from collections import Counter
@@ -73,6 +76,7 @@ def export(all_records: list[Record], out: Path, verified_only: bool = True, min
     write_jsonl(out / "test_logs.jsonl", [{"id": r.id, "log_before": r.verification.log_before,
                                            "log_after": r.verification.log_after} for r in released])
     write_jsonl(out / "swebench.jsonl", [swebench_row(r) for r in released])
+    write_jsonl(out / "sample.jsonl", [without_logs(r) for r in released[:SAMPLE_SIZE]])
     numbers = stats(all_records, released)
     (out / "stats.json").write_text(json.dumps(numbers, indent=2), encoding="utf-8")
     (out / "DATASET_CARD.md").write_text(dataset_card(released, numbers, verified_only, min_score), encoding="utf-8")

@@ -108,7 +108,7 @@ def cmd_export(args):
     out = Path(args.out)
     numbers = export(records, out, verified_only=not args.include_unverified, min_score=args.min_score)
     print(f"Exported {numbers['released']} record(s) to {out}")
-    print("  dataset.jsonl, test_logs.jsonl, swebench.jsonl, stats.json, DATASET_CARD.md")
+    print("  dataset.jsonl, test_logs.jsonl, swebench.jsonl, stats.json, DATASET_CARD.md, sample.jsonl")
 
 
 def cmd_stats(args):
