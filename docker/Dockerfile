@@ -14,7 +14,7 @@ RUN apt-get update \
 RUN pip install --no-cache-dir uv
 
 # Projects that read their version from git tags can't, in a 1-commit checkout
-ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 \
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=99.0.0 \
     PIP_NO_INPUT=1 \
     PYTHONDONTWRITEBYTECODE=1
 
