@@ -157,6 +157,9 @@ one file.
 - Python projects tested with pytest only.
 - Test IDs use pytest's JUnit naming (`tests.test_app::test_name`), not file
   paths (`tests/test_app.py::test_name`).
+- If the new tests import something that only exists after the fix, the whole
+  test file fails to load before it, so every test in that file is counted as
+  fail-to-pass, not only the tests about the bug.
 - Very old commits (before ~2019) often can't be installed any more and are
   left out, which skews the data towards recent code.
 - Fixes for bugs that only appear on a newer Python than the one chosen for

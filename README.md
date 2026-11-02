@@ -16,11 +16,13 @@ Every record is reproducible, licence-aware, and scored for quality.
 
 | | |
 |---|---|
-| Candidates mined | **[CANDIDATES]** from **2** repositories (pytest, Flask) |
-| Verified records | **[VERIFIED]** |
-| Tests that fail before and pass after the fix | **[FAIL_TO_PASS]** |
-| Verification rate (of records tried) | Flask **[FLASK_RATE]**, pytest **[PYTEST_RATE]** |
-| Average quality score (released records) | **[AVG_QUALITY]/100** |
+| Candidates mined | **80** from **2** repositories (pytest 58, Flask 22) |
+| Verified records | **32** (Flask 18, pytest 14) |
+| Verification rate, of records tried | Flask **82%** (18 of 22), pytest **70%** (14 of 20; 38 not tried yet) |
+| Average quality score of released records | **91/100** |
+| Licences | BSD-3-Clause 18, MIT 14 |
+| Python versions used for verification | 3.12 (29), 3.11 (2), 3.10 (1) |
+| Tests that fail before the fix and pass after | **1,002** in total; this count is inflated by a few records where the whole test file couldn't load before the fix (see Limitations) |
 
 Download the dataset from [Releases](../../releases). A 3-record sample is in
 [`examples/sample.jsonl`](examples/sample.jsonl).
@@ -179,6 +181,10 @@ after it.
 - Bugs that only appear on a newer Python than the one chosen for their date
   show up as "tests already pass" and are left out.
 - Test IDs follow pytest's JUnit naming (`tests.test_app::test_x`), not file paths.
+- If the new tests import something that only exists after the fix, the whole
+  test file fails to load before it, so **every** test in that file counts as
+  fail-to-pass (e.g. 149 for `pytest-dev__pytest-15150`), not just the ones
+  about the bug.
 - Verifying is slow for large projects (5–10 minutes per pytest record).
 - "Verified" means the new tests prove the fix; it doesn't mean the fix is the best one.
 
