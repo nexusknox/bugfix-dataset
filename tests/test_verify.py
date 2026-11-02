@@ -92,6 +92,32 @@ def test_one_broken_test_file_does_not_stop_the_others():
     assert "--continue-on-collection-errors" in runner.test_command(["tests/a.py"], Path("x.xml"))
 
 
+def test_project_pytest_options_are_kept_by_default():
+    assert "addopts=" not in runner.test_command(["tests/a.py"], Path("x.xml"))
+    assert "addopts=" in runner.test_command(["tests/a.py"], Path("x.xml"), keep_project_options=False)
+
+
+def test_options_dropped_only_when_pytest_cannot_use_them(monkeypatch, tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_x(): pass\n")
+    calls = []
+
+    def fake_run(cmd, cwd, timeout):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return 4, "error: unrecognized arguments: --cov=widgets"
+        return 0, "1 passed"
+
+    monkeypatch.setattr(runner, "run", fake_run)
+    runner.run_tests(tmp_path, ["tests/test_a.py"], tmp_path / "x.xml", 60)
+    assert len(calls) == 2 and "addopts=" in calls[1]
+
+
+def test_a_real_config_error_is_not_retried():
+    assert not runner.needs_plain_options(4, "ERROR: Unknown config option: pytester_example_dir")
+    assert not runner.needs_plain_options(1, "1 failed")
+
+
 def test_job_files_keep_unix_line_endings(tmp_path):
     prepare_job(make_record(), tmp_path / "job")
     assert b"\r\n" not in (tmp_path / "job" / "code.patch").read_bytes()
@@ -277,3 +303,9 @@ def test_install_does_not_retry_real_errors(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "run", lambda cmd, cwd, timeout: calls.append(cmd) or (1, "No solution found"))
     runner.run_install(["uv"], tmp_path)
     assert len(calls) == 1
+
+
+def test_dockerfile_pretends_a_high_version():
+    """pytest refuses to test itself if it believes it's version 0.0.0."""
+    dockerfile = (Path(__file__).parent.parent / "docker" / "Dockerfile").read_text()
+    assert "SETUPTOOLS_SCM_PRETEND_VERSION=99.0.0" in dockerfile

@@ -182,11 +182,24 @@ def parse_junit(xml_path: Path) -> dict[str, str]:
     return outcomes
 
 
-def test_command(test_files: list[str], xml_path: Path) -> list[str]:
+def test_command(test_files: list[str], xml_path: Path, keep_project_options: bool = True) -> list[str]:
     """--continue-on-collection-errors: one test file that can't load must not
-    stop every other test from running."""
-    return [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-rA", "-o", "addopts=",
-            "--continue-on-collection-errors", f"--junitxml={xml_path}", *test_files]
+    stop every other test from running.
+
+    The project's own pytest options (addopts) are kept: some test suites need
+    them (pytest's own suite loads its "pytester" plugin that way)."""
+    cmd = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-rA",
+           "--continue-on-collection-errors", f"--junitxml={xml_path}"]
+    if not keep_project_options:
+        cmd += ["-o", "addopts="]
+    return cmd + list(test_files)
+
+
+def needs_plain_options(code: int, output: str) -> bool:
+    """Exit code 4 is pytest's "usage error". If it's about an option from the
+    project's config that we can't honour (a plugin that isn't installed),
+    run again without the project's options."""
+    return code == 4 and ("unrecognized arguments" in output or "no such option" in output)
 
 
 def run_tests(repo: Path, test_files: list[str], xml_path: Path, timeout: int) -> tuple[dict, str]:
@@ -195,6 +208,8 @@ def run_tests(repo: Path, test_files: list[str], xml_path: Path, timeout: int) -
         return {}, "no test files to run"
     xml_path.unlink(missing_ok=True)
     code, out = run(test_command(existing, xml_path), repo, timeout)
+    if needs_plain_options(code, out):
+        code, out = run(test_command(existing, xml_path, keep_project_options=False), repo, timeout)
     return parse_junit(xml_path), tail(out)
 
 
