@@ -29,8 +29,9 @@ class StepFailed(Exception):
 
 def run(cmd: list[str], cwd: Path, timeout: int) -> tuple[int, str]:
     try:
-        done = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-                              env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        # errors="replace": some test suites print raw bytes that aren't valid text
+        done = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, errors="replace",
+                              timeout=timeout, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
         return done.returncode, done.stdout + done.stderr
     except subprocess.TimeoutExpired:
         return -1, f"timed out after {timeout} s: {' '.join(cmd)}"
@@ -106,6 +107,30 @@ def run_install(cmd: list[str], repo: Path, timeout: int = 900) -> tuple[int, st
     return code, out
 
 
+MODERN_SETUPTOOLS = "setuptools>=64,<71"
+
+
+def needs_modern_setuptools(out: str) -> bool:
+    """Editable installs of setup.py-only projects need setuptools 64+ (2022).
+    Installing "as of" an older date gives an older setuptools, which can't."""
+    return "build_editable" in out
+
+
+def install_editable(pip: list[str], target: str, repo: Path) -> tuple[int, str]:
+    """pip install -e, falling back to today's setuptools for old setup.py projects.
+
+    The fallback only changes the build tool: the project's own dependencies
+    still come from the merge date."""
+    code, out = run_install(pip + ["-e", target], repo)
+    if code != 0 and needs_modern_setuptools(out):
+        # 64+ can do editable installs; below 71 it uses its own built-in copy of
+        # "packaging", not the project's dated one (which may be too old for it)
+        _, tools = run_install(pip_command(None) + [MODERN_SETUPTOOLS, "wheel"], repo)
+        code, out = run_install(pip + ["--no-build-isolation", "-e", target], repo)
+        out = tools + "\n(retried with current setuptools, no build isolation)\n" + out
+    return code, out
+
+
 def subprojects(repo: Path, test_files: list[str]) -> list[Path]:
     """Folders between a test file and the repo root that are their own
     installable project (e.g. Flask's examples/javascript)."""
@@ -140,12 +165,12 @@ def install(repo: Path, date: str | None = None, test_files: list[str] | None = 
 
     extra = next((e for e in ("testing", "tests", "test", "dev") if e in available), None)
     target = f".[{extra}]" if extra else "."
-    code, out = run_install(pip + ["-e", target], repo)
+    code, out = install_editable(pip, target, repo)
     log.append(out)
     if code != 0:
         raise StepFailed("couldn't install the project: " + tail(out, 8))
     for folder in subprojects(repo, test_files or []):
-        code, out = run_install(pip + ["-e", str(folder)], repo)
+        code, out = install_editable(pip, str(folder), repo)
         log.append(out)
         if code != 0:
             raise StepFailed(f"couldn't install {folder.relative_to(repo)}: " + tail(out, 8))

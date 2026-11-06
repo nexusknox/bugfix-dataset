@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 
 import pytest
 from pathlib import Path
@@ -309,3 +310,34 @@ def test_dockerfile_pretends_a_high_version():
     """pytest refuses to test itself if it believes it's version 0.0.0."""
     dockerfile = (Path(__file__).parent.parent / "docker" / "Dockerfile").read_text()
     assert "SETUPTOOLS_SCM_PRETEND_VERSION=99.0.0" in dockerfile
+
+
+# ---- install fallbacks found on click and werkzeug
+
+def test_old_setup_py_projects_are_retried_with_current_setuptools(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_install(cmd, repo, timeout=900):
+        calls.append(cmd)
+        if cmd[-2:] == ["-e", "."] and "--no-build-isolation" not in cmd:
+            return 1, "cause: Call to `setuptools.build_meta:__legacy__.build_editable` failed"
+        return 0, "ok"
+
+    monkeypatch.setattr(runner, "run_install", fake_install)
+    code, out = runner.install_editable(runner.pip_command("2021-05-01T00:00:00Z"), ".", tmp_path)
+    assert code == 0 and "retried with current setuptools" in out
+    tools = calls[1]
+    assert "setuptools>=64,<71" in tools and "--exclude-newer" not in tools  # build tool: not dated
+    assert "--exclude-newer" in calls[2] and "--no-build-isolation" in calls[2]  # deps: still dated
+
+
+def test_other_install_failures_are_not_retried(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(runner, "run_install", lambda cmd, repo, timeout=900: (calls.append(cmd), (1, "no matching distribution"))[1])
+    code, _ = runner.install_editable(runner.pip_command(None), ".", tmp_path)
+    assert code == 1 and len(calls) == 1
+
+
+def test_output_with_raw_bytes_does_not_crash(tmp_path):
+    code, out = runner.run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok \\xff\\xfe done')"], tmp_path, 30)
+    assert code == 0 and out.startswith("ok") and out.endswith("done")
