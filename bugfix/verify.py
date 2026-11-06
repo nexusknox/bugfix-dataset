@@ -15,6 +15,7 @@ from typing import Callable
 
 from bugfix.models import Quality, Record, Verification
 from bugfix.rules import quality_score, scrub_text, split_fix
+from bugfix.targets import narrow
 
 IMAGE = "bugfix-runner"
 DOCKER_TIMEOUT = 45 * 60  # install + two test runs
@@ -71,15 +72,20 @@ def last_error_line(log: str) -> str:
     return lines[-1][:200] if lines else "pytest printed nothing"
 
 
-def decide(result: dict) -> Verification:
-    """Turn the container's result into a Verification."""
+def decide(result: dict, test_patch: str = "") -> Verification:
+    """Turn the container's result into a Verification.
+
+    Of the tests that flipped, fail_to_pass keeps the ones the test patch adds
+    or edits; the rest go to also_fixed (see targets.py).
+    """
     v = Verification(python_version=result.get("python_version", ""),
                      log_before=scrub_text(result.get("log_before", "")),
                      log_after=scrub_text(result.get("log_after", "")))
     if result.get("status") != "ran":
         v.status, v.note = "error", result.get("note") or "the run didn't finish"
         return v
-    v.fail_to_pass, v.pass_to_pass, broken = classify(result["before"], result["after"])
+    flipped, v.pass_to_pass, broken = classify(result["before"], result["after"])
+    v.fail_to_pass, v.also_fixed, narrow_note = narrow(flipped, test_patch)
     if broken:
         v.status, v.note = "failed", f"the fix breaks {len(broken)} test(s): {', '.join(broken[:3])}"
     elif not v.fail_to_pass:
@@ -90,8 +96,24 @@ def decide(result: dict) -> Verification:
         else:
             v.status, v.note = "failed", "the new tests don't pass with the fix either"
     else:
-        v.status = "verified"
+        v.status, v.note = "verified", narrow_note
     return v
+
+
+def refine(record: Record) -> bool:
+    """Re-narrow a verified record's tests without re-running Docker.
+
+    Every flipped test is already stored in fail_to_pass + also_fixed, so the
+    narrowed list can be worked out again from the test patch. True if it changed.
+    """
+    v = record.verification
+    if v.status != "verified":
+        return False
+    flipped = sorted(set(v.fail_to_pass) | set(v.also_fixed))
+    fail_to_pass, also_fixed, note = narrow(flipped, record.test_patch)
+    changed = (fail_to_pass, also_fixed, note) != (v.fail_to_pass, v.also_fixed, v.note)
+    v.fail_to_pass, v.also_fixed, v.note = fail_to_pass, also_fixed, note
+    return changed
 
 
 # ------------------------------------------------------------------ docker
@@ -184,7 +206,7 @@ def verify_record(record: Record, work_root: Path, runner: Callable[[Record, Pat
     except Exception as error:  # one bad record must not stop a batch
         logging.exception("Verifying %s failed", record.id)
         result = {"status": "error", "note": f"unexpected problem: {error}"}
-    record.verification = decide(result)
+    record.verification = decide(result, record.test_patch)
     fix = split_fix(record.code_patch + record.test_patch)
     score, reasons = quality_score(record.issue.body, fix, verified=record.verification.status == "verified")
     record.quality = Quality(score, reasons)

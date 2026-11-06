@@ -72,6 +72,11 @@ with right:
     st.code("\n".join(record.quality.reasons), language=None)
     st.markdown(f"**Fail → pass ({len(v.fail_to_pass)})**")
     st.code("\n".join(v.fail_to_pass) or "-", language=None)
+    if v.also_fixed:
+        with st.expander(f"Also fixed ({len(v.also_fixed)}): flipped, but not tests the PR added or edited"):
+            st.code("\n".join(v.also_fixed), language=None)
+    if v.note:
+        st.caption(v.note)
     st.caption(f"Python {v.python_version or '?'} · base commit {record.base_commit[:10]} · "
                f"{len(v.pass_to_pass)} other test(s) still pass")
 

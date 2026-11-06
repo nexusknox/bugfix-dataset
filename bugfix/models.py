@@ -39,6 +39,7 @@ class Verification:
     status: str = "not_run"            # not_run, verified, failed, error
     fail_to_pass: list[str] = field(default_factory=list)  # fail without the fix, pass with it (the proof)
     pass_to_pass: list[str] = field(default_factory=list)  # pass both times (the fix broke nothing)
+    also_fixed: list[str] = field(default_factory=list)    # also flipped, but not a test the PR added or edited
     log_before: str = ""
     log_after: str = ""
     python_version: str = ""

@@ -45,7 +45,8 @@ def swebench_row(record: Record) -> dict:
         "created_at": record.issue.created_at,
         "version": record.verification.python_version,
         "FAIL_TO_PASS": json.dumps(record.verification.fail_to_pass),
-        "PASS_TO_PASS": json.dumps(record.verification.pass_to_pass),
+        # also_fixed tests pass with the fix too, so evaluators should still check them
+        "PASS_TO_PASS": json.dumps(sorted(record.verification.pass_to_pass + record.verification.also_fixed)),
         "license": record.license,
     }
 
@@ -60,6 +61,8 @@ def stats(all_records: list[Record], released: list[Record]) -> dict:
         "by_python": dict(Counter(r.verification.python_version.rsplit(".", 1)[0] for r in released).most_common()),
         "average_quality": round(sum(r.quality.score for r in released) / len(released), 1) if released else 0,
         "fail_to_pass_tests": sum(len(r.verification.fail_to_pass) for r in released),
+        "also_fixed_tests": sum(len(r.verification.also_fixed) for r in released),
+        "records_keeping_all_flipped": sum(1 for r in released if r.verification.note),
     }
 
 
@@ -113,7 +116,10 @@ Generated {today} by [bugfix-dataset](https://github.com/nexusknox/bugfix-datase
 ## At a glance
 
 - **{numbers['released']} records** released ({selection}, quality score ≥ {min_score})
-- **{numbers['fail_to_pass_tests']} tests** that fail before the fix and pass after it
+- **{numbers['fail_to_pass_tests']} target tests**: tests the fix's pull request added or
+  edited, that fail before the fix and pass after it
+- {numbers['also_fixed_tests']} more tests also start passing with the fix (usually because
+  their file couldn't load before it); they're listed separately as `also_fixed`
 - Average quality score: **{numbers['average_quality']}/100**
 - Built from {numbers['candidates']} candidates; verification results:
   {", ".join(f"{k} {v}" for k, v in numbers['verification'].items())}
@@ -141,9 +147,9 @@ Generated {today} by [bugfix-dataset](https://github.com/nexusknox/bugfix-datase
 
 | File | Contents |
 |---|---|
-| `dataset.jsonl` | One record per line: issue, PR, commits, `code_patch`, `test_patch`, `fail_to_pass`, `pass_to_pass`, quality score with reasons |
+| `dataset.jsonl` | One record per line: issue, PR, commits, `code_patch`, `test_patch`, `fail_to_pass`, `also_fixed`, `pass_to_pass`, quality score with reasons |
 | `test_logs.jsonl` | pytest output before and after the fix, per record |
-| `swebench.jsonl` | The same records with SWE-bench field names (`instance_id`, `patch`, `test_patch`, `problem_statement`, `FAIL_TO_PASS`, …) |
+| `swebench.jsonl` | The same records with SWE-bench field names (`instance_id`, `patch`, `test_patch`, `problem_statement`, `FAIL_TO_PASS`, …); `also_fixed` tests are added to `PASS_TO_PASS` so evaluators still check them |
 | `stats.json` | The numbers on this card |
 
 ## Quality score
@@ -157,9 +163,10 @@ one file.
 - Python projects tested with pytest only.
 - Test IDs use pytest's JUnit naming (`tests.test_app::test_name`), not file
   paths (`tests/test_app.py::test_name`).
-- If the new tests import something that only exists after the fix, the whole
-  test file fails to load before it, so every test in that file is counted as
-  fail-to-pass, not only the tests about the bug.
+- `fail_to_pass` holds the tests the pull request added or edited, found by
+  reading the test patch. If a patch only changes fixtures or helpers, no
+  target can be found and every flipped test is kept, with a note
+  ({numbers['records_keeping_all_flipped']} record(s) here).
 - Very old commits (before ~2019) often can't be installed any more and are
   left out, which skews the data towards recent code.
 - Fixes for bugs that only appear on a newer Python than the one chosen for
